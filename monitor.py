@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import sys
 import traceback
 import requests
@@ -10,6 +11,10 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 STATE_FILE = "stock_state.json"
+
+# 目标尺码：UK 8 / EU 42
+TARGET_UK = 8.0
+TARGET_EU = 42.0
 
 PRODUCTS = [
     {
@@ -64,69 +69,50 @@ async def check_product(product):
         page = await browser.new_page()
         try:
             print(f"🔍 Checking {product['name']} ...")
-            
-            # 更健壮的导航策略
+
             try:
                 await page.goto(product["url"], wait_until="domcontentloaded", timeout=45000)
             except PlaywrightTimeout:
-                print(f"  ⚠️ domcontentloaded timeout, trying without wait...")
+                print("  ⚠️ domcontentloaded timeout, trying without wait...")
                 await page.goto(product["url"], timeout=45000)
-            
-            # 额外等待 JS 渲染
-            await page.wait_for_timeout(4000)
-            
-            # 尝试等待关键元素（可选）
+
+            # BananaFingers (Magento) 把尺码放在 <select class="super-attribute-select">
+            # 里，每个 <option> 缺货时会被打上 disabled 属性——这是判断库存唯一可靠的信号，
+            # 不能靠在整页 HTML 里搜索裸数字 "42"（价格、其他尺码换算比如 42.66 EU 都会
+            # 包含 "42"，导致误判）。
             try:
-                await page.wait_for_selector(
-                    'button:has-text("Add to Cart"), [class*="add-to"], text=/EU|UK|42/i',
-                    timeout=8000
-                )
-            except:
-                pass
+                await page.wait_for_selector("select.super-attribute-select", timeout=15000)
+            except PlaywrightTimeout:
+                print("  ⚠️ 未找到尺码选择框（select.super-attribute-select），页面结构可能变了")
+                return False
 
-            # 精准检测逻辑（保持之前优化版）
-            is_size_selectable = False
-            target_texts = ["EU 42", "42", "UK 8", "UK8"]
+            select = page.locator("select.super-attribute-select").first
+            options = select.locator("option")
+            count = await options.count()
 
-            for target in target_texts:
-                try:
-                    locator = page.locator(
-                        f'button:has-text("{target}"), option:has-text("{target}"), '
-                        f'[class*="swatch"]:has-text("{target}"), [class*="option"]:has-text("{target}"), '
-                        f'li:has-text("{target}"), span:has-text("{target}")'
-                    )
-                    count = await locator.count()
-                    for i in range(min(count, 8)):
-                        el = locator.nth(i)
-                        try:
-                            cls = (await el.get_attribute("class") or "").lower()
-                            if any(bad in cls for bad in ["disabled", "unavailable", "out-of-stock", "sold-out"]):
-                                continue
-                            try:
-                                if await el.is_disabled():
-                                    continue
-                            except:
-                                pass
-                            txt = (await el.text_content() or "").lower()
-                            if any(bad in txt for bad in ["out of stock", "notify me", "sold out"]):
-                                continue
-                            is_size_selectable = True
-                            print(f"  ✅ Found available size: {target}")
-                            break
-                        except:
-                            continue
-                    if is_size_selectable:
-                        break
-                except Exception as loc_e:
-                    print(f"  Locator warning for {target}: {loc_e}")
+            available = False
+            found_target = False
 
-            content = (await page.content()).lower()
-            has_target = any(t.lower() in content for t in ["eu 42", "42", "uk 8"])
-            has_add = "add to cart" in content
-            has_out = "out of stock" in content or "sold out" in content
-            has_notify = "notify me" in content
+            for i in range(count):
+                opt = options.nth(i)
+                text = (await opt.text_content() or "").strip()
+                # 例如 "8 UK / 42 EU"，用带单位的数字对精确匹配，避免 "8.5 UK / 42.66 EU" 之类误命中
+                m = re.search(r"(\d+(?:\.\d+)?)\s*UK\s*/\s*(\d+(?:\.\d+)?)\s*EU", text, re.I)
+                if not m:
+                    continue
+                uk_size = float(m.group(1))
+                eu_size = float(m.group(2))
+                if abs(uk_size - TARGET_UK) < 0.01 and abs(eu_size - TARGET_EU) < 0.01:
+                    found_target = True
+                    is_disabled = await opt.is_disabled()
+                    available = not is_disabled
+                    status = "有货" if available else "缺货"
+                    print(f"  {'✅' if available else '⛔'} 目标尺码 \"{text}\" → {status} (disabled={is_disabled})")
+                    break
 
-            available = is_size_selectable or (has_target and has_add and not has_out and not has_notify)
+            if not found_target:
+                print(f"  ⚠️ 尺码列表中没有找到 UK{TARGET_UK}/EU{TARGET_EU}，判定为缺货")
+
             print(f"  Result → available={available}")
             return available
 
