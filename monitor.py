@@ -66,7 +66,15 @@ async def check_product(product):
             headless=True,
             args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
         )
-        page = await browser.new_page()
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1366, "height": 900},
+            locale="en-GB",
+        )
+        page = await context.new_page()
         try:
             print(f"🔍 Checking {product['name']} ...")
 
@@ -76,14 +84,26 @@ async def check_product(product):
                 print("  ⚠️ domcontentloaded timeout, trying without wait...")
                 await page.goto(product["url"], timeout=45000)
 
+            # 给 Cloudflare 等反爬挑战 / 懒加载内容一点缓冲时间
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            except PlaywrightTimeout:
+                pass
+
             # BananaFingers (Magento) 把尺码放在 <select class="super-attribute-select">
             # 里，每个 <option> 缺货时会被打上 disabled 属性——这是判断库存唯一可靠的信号，
             # 不能靠在整页 HTML 里搜索裸数字 "42"（价格、其他尺码换算比如 42.66 EU 都会
             # 包含 "42"，导致误判）。
             try:
-                await page.wait_for_selector("select.super-attribute-select", timeout=15000)
+                await page.wait_for_selector("select.super-attribute-select", timeout=20000)
             except PlaywrightTimeout:
-                print("  ⚠️ 未找到尺码选择框（select.super-attribute-select），页面结构可能变了")
+                title = await page.title()
+                body_snippet = (await page.inner_text("body"))[:300].replace("\n", " ")
+                print(f"  ⚠️ 未找到尺码选择框（select.super-attribute-select）")
+                print(f"  🔎 诊断信息 → 当前页面标题: \"{title}\" | URL: {page.url}")
+                print(f"  🔎 页面内容片段: {body_snippet}")
+                if any(k in (title + body_snippet).lower() for k in ["just a moment", "cloudflare", "captcha", "access denied", "attention required", "verify you are human"]):
+                    print("  🚫 疑似被反爬 / Bot 检测拦截（Cloudflare 或类似机制）")
                 return False
 
             select = page.locator("select.super-attribute-select").first
