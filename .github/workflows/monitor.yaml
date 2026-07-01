@@ -1,3 +1,8 @@
+      - name: Install dependencies
+        run: |
+          pip install playwright requests
+          playwright install chromium --with-deps
+
       - name: Run stock monitor
         run: |
           echo "=== 当前目录文件列表 ==="
@@ -7,3 +12,6 @@
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Commit stock state if changed
+        ...
