@@ -2,11 +2,11 @@ name: Monitor BananaFingers Hiangle Stock
 
 on:
   schedule:
-    - cron: '*/10 * * * *'   # 每10分钟，可改为 */15 或 0 */2
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 permissions:
-  contents: write   # 允许更新 stock_state.json
+  contents: write
 
 jobs:
   check-stock:
@@ -14,8 +14,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Debug - List files
+        run: ls -la
 
       - name: Setup Python
         uses: actions/setup-python@v5
